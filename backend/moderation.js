@@ -134,4 +134,40 @@ async function moderateMessage(raw) {
   return { allowed: true, reason: null };
 }
 
-module.exports = { moderateMessage, normalizeText };
+/**
+ * Username validation - separate from message moderation since usernames
+ * have different rules (no personal-info regex needed, but stricter
+ * charset + length limits, since these are shown persistently and used
+ * as a friend-list display name).
+ * Returns { allowed: boolean, reason: string|null }
+ */
+function moderateUsername(raw) {
+  if (typeof raw !== "string") return { allowed: false, reason: "invalid" };
+  const trimmed = raw.trim();
+
+  if (trimmed.length < 2) return { allowed: false, reason: "too_short" };
+  if (trimmed.length > 20) return { allowed: false, reason: "too_long" };
+
+  // Keep it to letters, numbers, spaces, underscores, hyphens - blocks
+  // impersonation tricks using lookalike unicode characters, emoji spam,
+  // and zero-width characters used to bypass filters.
+  if (!/^[a-zA-Z0-9 _-]+$/.test(trimmed)) {
+    return { allowed: false, reason: "invalid_characters" };
+  }
+
+  const normalized = normalizeText(trimmed);
+  if (containsBlockedWord(normalized)) {
+    return { allowed: false, reason: "profanity" };
+  }
+
+  // Block usernames that look like they're impersonating the app itself
+  // or staff - a common social-engineering trick.
+  const impersonationTerms = ["admin", "moderator", "support", "5minchat", "official"];
+  if (impersonationTerms.some((term) => normalized.includes(term))) {
+    return { allowed: false, reason: "impersonation" };
+  }
+
+  return { allowed: true, reason: null };
+}
+
+module.exports = { moderateMessage, moderateUsername, normalizeText };

@@ -18,7 +18,25 @@ function formatTime(ms) {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-export default function ChatRoom({ session, onSessionEnd }) {
+function downloadTextFile(filename, text) {
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+export default function ChatRoom({
+  session,
+  onSessionEnd,
+  friendRequestIncoming,
+  onRespondFriendRequest,
+  friendRequestOutgoingStatus,
+}) {
   const { roomId, endTime, yourName, partnerName, partnerSocketId } = session;
 
   const [messages, setMessages] = useState([]);
@@ -29,6 +47,8 @@ export default function ChatRoom({ session, onSessionEnd }) {
   const [reportOpen, setReportOpen] = useState(false);
   const [reportCategory, setReportCategory] = useState("harassment");
   const [reportSent, setReportSent] = useState(false);
+  const [friendRequestSent, setFriendRequestSent] = useState(false);
+  const [friendActionError, setFriendActionError] = useState(null);
 
   const messagesEndRef = useRef(null);
   const typingTimeoutRef = useRef(null);
@@ -128,6 +148,29 @@ export default function ChatRoom({ session, onSessionEnd }) {
     }, 1200);
   }
 
+  function handleSendFriendRequest() {
+    setFriendActionError(null);
+    socket.emit("send_friend_request", {}, (res) => {
+      if (res?.ok) {
+        setFriendRequestSent(true);
+      } else {
+        const messages = {
+          rate_limited: "You can only send one friend request per minute.",
+          already_requested_this_conversation: "You've already sent a request this conversation.",
+        };
+        setFriendActionError(messages[res?.error] || "Couldn't send the request right now.");
+      }
+    });
+  }
+
+  function handleSaveChat() {
+    const header = `5minchat conversation\nWith: ${partnerName}\nSaved: ${new Date().toLocaleString()}\n\nThis is your own local copy — nothing is stored on 5minchat's servers.\n${"-".repeat(40)}\n\n`;
+    const body = messages
+      .map((m) => `[${new Date(m.sentAt).toLocaleTimeString()}] ${m.senderName}: ${m.text}`)
+      .join("\n");
+    downloadTextFile(`5minchat-${Date.now()}.txt`, header + (body || "(no messages)"));
+  }
+
   return (
     <div className="screen chat-room">
       <div className="chat-header">
@@ -144,10 +187,29 @@ export default function ChatRoom({ session, onSessionEnd }) {
         <button className="link-btn" onClick={handleBlock}>
           Block
         </button>
+        <button className="link-btn" onClick={handleSaveChat}>
+          Save Chat
+        </button>
+        {!friendRequestSent && friendRequestOutgoingStatus !== "accepted" && (
+          <button className="link-btn" onClick={handleSendFriendRequest}>
+            Add Friend
+          </button>
+        )}
+        {friendRequestSent && friendRequestOutgoingStatus === "accepted" && (
+          <span className="friend-status accepted">Friends added ✓</span>
+        )}
+        {friendRequestSent && friendRequestOutgoingStatus === "declined" && (
+          <span className="friend-status declined">Request declined</span>
+        )}
+        {friendRequestSent && !friendRequestOutgoingStatus && (
+          <span className="friend-status pending">Request sent…</span>
+        )}
         <button className="link-btn danger" onClick={handleLeave}>
           Leave
         </button>
       </div>
+
+      {friendActionError && <div className="moderation-toast">{friendActionError}</div>}
 
       <div className="messages">
         {messages.length === 0 && (
@@ -215,6 +277,26 @@ export default function ChatRoom({ session, onSessionEnd }) {
                 </div>
               </>
             )}
+          </div>
+        </div>
+      )}
+
+      {friendRequestIncoming && (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <h3>Friend request</h3>
+            <p className="modal-sub">
+              {friendRequestIncoming.fromName} wants to add you as a friend. You'll be
+              able to start a chat directly with them later, if they're online.
+            </p>
+            <div className="modal-buttons">
+              <button className="btn-secondary" onClick={() => onRespondFriendRequest(false)}>
+                Decline
+              </button>
+              <button className="btn-primary small" onClick={() => onRespondFriendRequest(true)}>
+                Accept
+              </button>
+            </div>
           </div>
         </div>
       )}

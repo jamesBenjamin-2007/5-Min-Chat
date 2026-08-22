@@ -120,7 +120,8 @@ connection fails. Two ways to reduce how often this bites people:
 
 ## Safety features included (MVP scope from your plan)
 
-- Anonymous random display names (no accounts, no persistent identity)
+- Anonymous random display names (no accounts, no persistent identity) —
+  or pick your own username, filtered through moderation
 - Server-enforced 5-minute session, both sides expire together
 - Profanity filter with normalization (catches spacing/leetspeak tricks like
   `f u c k` or `f4ck`) — see `backend/moderation.js`
@@ -129,6 +130,50 @@ connection fails. Two ways to reduce how often this bites people:
 - Per-user message rate limiting (max 8 messages / 10 seconds)
 - Report, Block, and Leave, all available mid-chat
 - No chat transcripts stored anywhere — not in a database, not in logs
+
+## New: Custom usernames, Save Chat, and Friends
+
+**Custom usernames** — On the landing page, users can type their own display
+name instead of getting a random one. It's validated server-side
+(`moderateUsername` in `backend/moderation.js`): 2-20 characters, letters/
+numbers/spaces/`-`/`_` only (blocks unicode lookalike tricks and emoji
+spam), filtered against the same profanity list, and blocked from
+impersonating "admin", "support", "5minchat", etc. If a name is rejected,
+the user silently falls back to a random name and sees a message explaining
+why.
+
+**Save Chat** — a button in the chat room downloads the current
+conversation as a `.txt` file **directly to the user's own device**. This
+is intentionally client-side only — nothing is ever written to the
+server's database or disk. This preserves the core "we don't keep your
+conversations" promise while still letting an individual keep their own
+copy of a conversation they personally want to remember.
+
+**Friends (mutual opt-in only)** — Either person in a chat can hit "Add
+Friend." The other person sees a request and must explicitly accept
+before anything is saved — this is not a one-sided follow. Once accepted,
+both people can see each other in a "My Friends" list and start a new
+timed 5-minute chat directly with each other later, if both are online.
+
+Two important design notes on this:
+
+1. **This is built on a lightweight client-side identity, not real
+   accounts.** Each browser generates a random ID (`crypto.randomUUID()`)
+   on first visit and stores it in `localStorage`. That ID is what
+   "remembers" a friendship — there's no email, password, or login
+   anywhere. Clearing browser data or switching devices means losing your
+   friend list. This is intentional: it avoids the far bigger scope of
+   building real accounts.
+2. **Please read this before promoting this feature widely.** Enabling any
+   form of persistent contact between anonymous, unverified strangers is
+   a meaningfully different safety posture than a disappearing 5-minute
+   chat — it's the same category of feature that contributed to Omegle's
+   legal troubles when combined with no age verification. The current
+   implementation is mutual-opt-in only (not one-sided) and rate-limited
+   to one friend request per conversation, but if you plan to grow this
+   product seriously, strongly consider adding age verification and a
+   dedicated abuse-reporting path for the Friends feature specifically
+   before promoting it heavily.
 
 ## What's intentionally left as a next step
 

@@ -1,4 +1,11 @@
-export default function Landing({ onStart, connectionError }) {
+export default function Landing({
+  onStart,
+  connectionError,
+  usernameDraft,
+  onUsernameChange,
+  usernameError,
+  onOpenFriends,
+}) {
   return (
     <div className="screen landing">
       <div className="landing-inner">
@@ -9,8 +16,25 @@ export default function Landing({ onStart, connectionError }) {
           hits zero, the conversation disappears — for good.
         </p>
 
+        <div className="username-field">
+          <label htmlFor="username-input">Your display name (optional)</label>
+          <input
+            id="username-input"
+            type="text"
+            value={usernameDraft}
+            onChange={(e) => onUsernameChange(e.target.value)}
+            placeholder="Leave blank for a random name"
+            maxLength={20}
+          />
+          {usernameError && <p className="error-text small">{usernameError}</p>}
+        </div>
+
         <button className="btn-primary" onClick={onStart}>
           Start a 5-Minute Chat
+        </button>
+
+        <button className="link-btn friends-link" onClick={onOpenFriends}>
+          My Friends
         </button>
 
         {connectionError && (
@@ -23,7 +47,7 @@ export default function Landing({ onStart, connectionError }) {
         <div className="principles">
           <div className="principle">
             <span className="dot" />
-            Anonymous by default — you get a random name, nothing else
+            Anonymous by default — pick a name or get a random one
           </div>
           <div className="principle">
             <span className="dot" />
@@ -31,7 +55,7 @@ export default function Landing({ onStart, connectionError }) {
           </div>
           <div className="principle">
             <span className="dot" />
-            Nothing is saved once the chat ends
+            Nothing is saved on our end once the chat ends
           </div>
           <div className="principle">
             <span className="dot" />

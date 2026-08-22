@@ -4,7 +4,7 @@ const http = require("http");
 const cors = require("cors");
 const { Server } = require("socket.io");
 const { randomUUID } = require("crypto");
-const { moderateMessage } = require("./moderation");
+const { moderateMessage, moderateUsername } = require("./moderation");
 
 // ---------------------------------------------------------------------
 // Config
@@ -24,6 +24,8 @@ const MESSAGE_RATE_WINDOW_MS = 10_000; // 10s
 const MESSAGE_RATE_MAX = 8; // max messages per window
 const REMATCH_COOLDOWN_MS = 2 * 60 * 1000; // don't re-pair the same 2 people for 2 min
 const MAX_QUEUE_WAIT_LOG_MS = 60_000;
+const FRIEND_REQUEST_COOLDOWN_MS = 60 * 1000; // 1 per minute per requester, anti-spam
+const MAX_FRIENDS = 200; // sanity ceiling per person
 
 // ---------------------------------------------------------------------
 // App setup
@@ -70,6 +72,27 @@ const anonNames = new Map(); // socketId -> display name
 const messageTimestamps = new Map(); // socketId -> [timestamps]
 const recentPairs = new Map(); // "idA|idB" -> timestamp of last match
 const blockedBy = new Map(); // socketId -> Set of socketIds they've blocked
+
+// ---------------------------------------------------------------------
+// Friends feature state.
+// A "persistentId" is a random UUID the client generates and stores in
+// its own localStorage - NOT an account, no password, no email. It just
+// lets the *same browser* be recognized across visits so a friendship
+// (which by definition needs to survive beyond one 5-minute session) has
+// something to attach to. Losing localStorage (clearing site data, new
+// device/browser) means losing your friend list - that's an intentional
+// trade-off to avoid building a full account system.
+//
+// NOTE: like the rest of this MVP, this is in-memory only - it resets if
+// the server restarts. Fine for launch; move to a real database (with a
+// migration plan) before relying on friend lists sticking around.
+// ---------------------------------------------------------------------
+const friendsOf = new Map(); // persistentId -> Set of persistentIds
+const usernameOf = new Map(); // persistentId -> last-known display name
+const persistentToSocket = new Map(); // persistentId -> socketId (only while online)
+const socketToPersistent = new Map(); // socketId -> persistentId
+const lastFriendRequestAt = new Map(); // persistentId -> timestamp (anti-spam)
+const pendingFriendRequestKey = new Map(); // roomId -> requester persistentId (one request per room)
 
 // ---------------------------------------------------------------------
 // Helpers
@@ -199,6 +222,9 @@ function createRoom(idA, idB) {
     partnerSocketId: idA,
   });
 
+  // Reset the one-friend-request-per-conversation guard for this room.
+  pendingFriendRequestKey.delete(roomId);
+
   // Server-authoritative expiry - the browser's countdown is cosmetic only.
   room.timer = setTimeout(() => expireRoom(roomId, "timeout"), SESSION_DURATION_MS);
 }
@@ -241,6 +267,35 @@ io.on("connection", (socket) => {
   const anonName = generateAnonName();
   anonNames.set(socket.id, anonName);
   socket.emit("connected", { anonName, socketId: socket.id });
+
+  // ---------------- Identity (persistentId) + custom username ----------
+  // The client sends this right after connecting. persistentId is a
+  // client-generated UUID stored in localStorage - it's how "friends"
+  // persist across sessions without a real account system.
+  socket.on("identify", ({ persistentId, username } = {}, ack) => {
+    if (typeof persistentId !== "string" || persistentId.length < 8 || persistentId.length > 100) {
+      return ack?.({ ok: false, error: "invalid_persistent_id" });
+    }
+
+    socketToPersistent.set(socket.id, persistentId);
+    persistentToSocket.set(persistentId, socket.id);
+
+    let finalName = anonNames.get(socket.id);
+    let usernameRejectedReason = null;
+
+    if (typeof username === "string" && username.trim().length > 0) {
+      const result = moderateUsername(username);
+      if (result.allowed) {
+        finalName = username.trim();
+        anonNames.set(socket.id, finalName);
+      } else {
+        usernameRejectedReason = result.reason;
+      }
+    }
+
+    usernameOf.set(persistentId, finalName);
+    ack?.({ ok: true, appliedName: finalName, usernameRejectedReason });
+  });
 
   socket.on("find_match", () => {
     // Guard against duplicate queue entries / already in a room.
@@ -331,6 +386,115 @@ io.on("connection", (socket) => {
     socket.emit("report_received");
   });
 
+  // ---------------- Friends: mutual opt-in only ----------------------
+  // Either person can send a request; the other person must explicitly
+  // accept before anything is saved. One request per conversation to
+  // discourage spamming requests at strangers who've said no.
+  socket.on("send_friend_request", (_data, ack) => {
+    const roomId = socketToRoom.get(socket.id);
+    const room = roomId && rooms.get(roomId);
+    if (!room || room.status !== "active") {
+      return ack?.({ ok: false, error: "no_active_session" });
+    }
+
+    const myPersistentId = socketToPersistent.get(socket.id);
+    if (!myPersistentId) return ack?.({ ok: false, error: "not_identified" });
+
+    if (pendingFriendRequestKey.has(roomId)) {
+      return ack?.({ ok: false, error: "already_requested_this_conversation" });
+    }
+
+    const lastSent = lastFriendRequestAt.get(myPersistentId) || 0;
+    if (Date.now() - lastSent < FRIEND_REQUEST_COOLDOWN_MS) {
+      return ack?.({ ok: false, error: "rate_limited" });
+    }
+
+    const partnerId = room.users.find((id) => id !== socket.id);
+    if (!partnerId) return ack?.({ ok: false, error: "no_partner" });
+
+    pendingFriendRequestKey.set(roomId, myPersistentId);
+    lastFriendRequestAt.set(myPersistentId, Date.now());
+
+    io.to(partnerId).emit("friend_request_received", {
+      fromName: anonNames.get(socket.id),
+    });
+    ack?.({ ok: true });
+  });
+
+  socket.on("respond_friend_request", ({ accept } = {}, ack) => {
+    const roomId = socketToRoom.get(socket.id);
+    const room = roomId && rooms.get(roomId);
+    if (!room) return ack?.({ ok: false, error: "no_active_session" });
+
+    const requesterPersistentId = pendingFriendRequestKey.get(roomId);
+    if (!requesterPersistentId) return ack?.({ ok: false, error: "no_pending_request" });
+
+    const myPersistentId = socketToPersistent.get(socket.id);
+    const requesterSocketId = persistentToSocket.get(requesterPersistentId);
+
+    if (accept && myPersistentId && requesterSocketId) {
+      if (!friendsOf.has(myPersistentId)) friendsOf.set(myPersistentId, new Set());
+      if (!friendsOf.has(requesterPersistentId)) friendsOf.set(requesterPersistentId, new Set());
+
+      if (friendsOf.get(myPersistentId).size < MAX_FRIENDS) {
+        friendsOf.get(myPersistentId).add(requesterPersistentId);
+      }
+      if (friendsOf.get(requesterPersistentId).size < MAX_FRIENDS) {
+        friendsOf.get(requesterPersistentId).add(myPersistentId);
+      }
+
+      usernameOf.set(myPersistentId, anonNames.get(socket.id));
+      io.to(requesterSocketId).emit("friend_request_result", { accepted: true });
+    } else if (requesterSocketId) {
+      io.to(requesterSocketId).emit("friend_request_result", { accepted: false });
+    }
+
+    pendingFriendRequestKey.delete(roomId);
+    ack?.({ ok: true });
+  });
+
+  socket.on("get_friends", (_data, ack) => {
+    const myPersistentId = socketToPersistent.get(socket.id);
+    if (!myPersistentId) return ack?.({ ok: false, error: "not_identified", friends: [] });
+
+    const friendIds = Array.from(friendsOf.get(myPersistentId) || []);
+    const friends = friendIds.map((fid) => ({
+      persistentId: fid,
+      username: usernameOf.get(fid) || "Unknown",
+      online: persistentToSocket.has(fid),
+    }));
+    ack?.({ ok: true, friends });
+  });
+
+  // Direct-connect with a specific friend (skips the random queue). Still
+  // goes through the normal 5-minute room/timer/moderation pipeline - this
+  // is not a persistent unmoderated DM channel, just a way to re-match a
+  // specific person for another timed session.
+  socket.on("start_friend_chat", ({ friendPersistentId } = {}, ack) => {
+    const myPersistentId = socketToPersistent.get(socket.id);
+    if (!myPersistentId) return ack?.({ ok: false, error: "not_identified" });
+    if (!friendsOf.get(myPersistentId)?.has(friendPersistentId)) {
+      return ack?.({ ok: false, error: "not_friends" });
+    }
+    if (socketToRoom.has(socket.id)) return ack?.({ ok: false, error: "already_in_session" });
+
+    const friendSocketId = persistentToSocket.get(friendPersistentId);
+    if (!friendSocketId || !io.sockets.sockets.get(friendSocketId)) {
+      return ack?.({ ok: false, error: "friend_offline" });
+    }
+    if (socketToRoom.has(friendSocketId)) {
+      return ack?.({ ok: false, error: "friend_busy" });
+    }
+    if (isBlockedPair(socket.id, friendSocketId)) {
+      return ack?.({ ok: false, error: "blocked" });
+    }
+
+    removeFromQueue(socket.id);
+    removeFromQueue(friendSocketId);
+    createRoom(socket.id, friendSocketId);
+    ack?.({ ok: true });
+  });
+
   socket.on("disconnect", () => {
     removeFromQueue(socket.id);
     const partnerId = leaveRoomEarly(socket.id, "disconnected");
@@ -339,6 +503,10 @@ io.on("connection", (socket) => {
     anonNames.delete(socket.id);
     messageTimestamps.delete(socket.id);
     blockedBy.delete(socket.id);
+
+    const myPersistentId = socketToPersistent.get(socket.id);
+    if (myPersistentId) persistentToSocket.delete(myPersistentId);
+    socketToPersistent.delete(socket.id);
   });
 });
 
