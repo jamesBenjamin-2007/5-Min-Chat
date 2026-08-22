@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { socket } from "../socket";
+import CountdownRing from "./CountdownRing.jsx";
 
 const REPORT_CATEGORIES = [
   { value: "harassment", label: "Harassment" },
@@ -11,12 +12,15 @@ const REPORT_CATEGORIES = [
   { value: "other", label: "Other" },
 ];
 
+const SESSION_DURATION_MS = 5 * 60 * 1000;
+
 function formatTime(ms) {
   const total = Math.max(0, Math.ceil(ms / 1000));
   const m = Math.floor(total / 60);
   const s = total % 60;
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
+
 
 function downloadTextFile(filename, text) {
   const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
@@ -106,6 +110,7 @@ export default function ChatRoom({
   const isExpired = remainingMs <= 0;
   const timeLabel = useMemo(() => formatTime(remainingMs), [remainingMs]);
   const isUrgent = remainingMs < 30_000;
+  const progress = Math.max(0, Math.min(1, remainingMs / SESSION_DURATION_MS));
 
   function sendMessage(e) {
     e.preventDefault();
@@ -177,7 +182,11 @@ export default function ChatRoom({
         <div className="partner-label">
           Chatting with <strong>{partnerName}</strong>
         </div>
-        <div className={`timer ${isUrgent ? "urgent" : ""}`}>{timeLabel}</div>
+        <div className={`timer-value ${isUrgent ? "urgent" : ""}`}>
+          <CountdownRing progress={progress} size={44} strokeWidth={4} urgent={isUrgent}>
+            <span style={{ fontSize: 10 }}>{timeLabel}</span>
+          </CountdownRing>
+        </div>
       </div>
 
       <div className="chat-actions">

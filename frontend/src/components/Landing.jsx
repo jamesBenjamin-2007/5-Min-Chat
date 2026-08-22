@@ -1,3 +1,5 @@
+import CountdownRing from "./CountdownRing.jsx";
+
 export default function Landing({
   onStart,
   connectionError,
@@ -10,14 +12,29 @@ export default function Landing({
     <div className="screen landing">
       <div className="landing-inner">
         <p className="eyebrow">5MINCHAT</p>
-        <h1>Five minutes with a stranger.</h1>
+
+        <div className="landing-hero-ring">
+          <CountdownRing progress={0.62} size={96} strokeWidth={5}>
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: 20, fontWeight: 700 }}>
+              3:07
+            </span>
+          </CountdownRing>
+        </div>
+
+        <h1>
+          Five minutes.
+          <br />
+          One stranger.
+          <br />
+          <span className="accent">Zero history.</span>
+        </h1>
         <p className="lede">
-          No profile. No history. No pressure to keep talking. When the timer
-          hits zero, the conversation disappears — for good.
+          No profile. No pressure to keep talking. When the ring runs out,
+          the conversation disappears — for good.
         </p>
 
         <div className="username-field">
-          <label htmlFor="username-input">Your display name (optional)</label>
+          <label htmlFor="username-input">Display name (optional)</label>
           <input
             id="username-input"
             type="text"
@@ -30,11 +47,11 @@ export default function Landing({
         </div>
 
         <button className="btn-primary" onClick={onStart}>
-          Start a 5-Minute Chat
+          Start a Chat
         </button>
 
-        <button className="link-btn friends-link" onClick={onOpenFriends}>
-          My Friends
+        <button className="friends-link" onClick={onOpenFriends}>
+          MY FRIENDS →
         </button>
 
         {connectionError && (
@@ -47,7 +64,7 @@ export default function Landing({
         <div className="principles">
           <div className="principle">
             <span className="dot" />
-            Anonymous by default — pick a name or get a random one
+            Pick a name, or get a random one
           </div>
           <div className="principle">
             <span className="dot" />
