@@ -4,6 +4,7 @@ const http = require("http");
 const cors = require("cors");
 const { Server } = require("socket.io");
 const { randomUUID } = require("crypto");
+const { createClient } = require("@supabase/supabase-js");
 const { moderateMessage, moderateUsername } = require("./moderation");
 
 // ---------------------------------------------------------------------
@@ -38,6 +39,110 @@ const corsOptions = {
 };
 app.use(cors(corsOptions));
 app.use(express.json());
+
+// ---------------------------------------------------------------------
+// Feed feature (posts + likes). Backed by Supabase (Postgres) since
+// Render's free-tier disk is wiped on every restart/redeploy - anything
+// written to local disk (like a SQLite file) would not survive. If these
+// env vars aren't set, the feed endpoints return 503 rather than crashing
+// the whole server - the chat feature keeps working either way.
+// ---------------------------------------------------------------------
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
+const supabase =
+  SUPABASE_URL && SUPABASE_SERVICE_KEY
+    ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+    : null;
+
+if (!supabase) {
+  console.warn(
+    "[feed] SUPABASE_URL / SUPABASE_SERVICE_KEY not set - /api/posts routes will return 503 until configured. See README."
+  );
+}
+
+function requireSupabase(_req, res, next) {
+  if (!supabase) return res.status(503).json({ error: "feed_not_configured" });
+  next();
+}
+
+app.get("/api/posts", requireSupabase, async (_req, res) => {
+  const { data, error } = await supabase
+    .from("posts")
+    .select("*")
+    .order("created_at", { ascending: false })
+    .limit(50);
+
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ posts: data });
+});
+
+app.post("/api/posts", requireSupabase, async (req, res) => {
+  const { persistentId, username, imageUrl, caption } = req.body || {};
+
+  if (typeof persistentId !== "string" || persistentId.length < 8) {
+    return res.status(400).json({ error: "invalid_persistent_id" });
+  }
+  if (typeof imageUrl !== "string" || !imageUrl.startsWith("https://")) {
+    return res.status(400).json({ error: "invalid_image_url" });
+  }
+
+  const safeUsername =
+    typeof username === "string" && username.trim() ? username.trim().slice(0, 20) : "Anonymous";
+
+  if (typeof caption === "string" && caption.trim()) {
+    const modResult = await moderateMessage(caption.trim());
+    if (!modResult.allowed) {
+      return res.status(400).json({ error: "moderated", reason: modResult.reason });
+    }
+  }
+
+  const { data, error } = await supabase
+    .from("posts")
+    .insert({
+      persistent_id: persistentId,
+      username: safeUsername,
+      image_url: imageUrl,
+      caption: typeof caption === "string" ? caption.trim().slice(0, 280) : null,
+    })
+    .select()
+    .single();
+
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ post: data });
+});
+
+app.post("/api/posts/:id/like", requireSupabase, async (req, res) => {
+  const { id } = req.params;
+  const { persistentId } = req.body || {};
+
+  if (typeof persistentId !== "string" || persistentId.length < 8) {
+    return res.status(400).json({ error: "invalid_persistent_id" });
+  }
+
+  const { data: existing, error: fetchError } = await supabase
+    .from("posts")
+    .select("likes")
+    .eq("id", id)
+    .single();
+
+  if (fetchError || !existing) return res.status(404).json({ error: "not_found" });
+
+  const currentLikes = existing.likes || [];
+  const alreadyLiked = currentLikes.includes(persistentId);
+  const nextLikes = alreadyLiked
+    ? currentLikes.filter((pid) => pid !== persistentId)
+    : [...currentLikes, persistentId];
+
+  const { data, error } = await supabase
+    .from("posts")
+    .update({ likes: nextLikes })
+    .eq("id", id)
+    .select()
+    .single();
+
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ post: data, liked: !alreadyLiked });
+});
 
 app.get("/", (_req, res) => {
   res.json({ status: "ok", service: "5minchat-backend" });

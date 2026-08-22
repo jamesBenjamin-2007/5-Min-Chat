@@ -175,7 +175,75 @@ Two important design notes on this:
    dedicated abuse-reporting path for the Friends feature specifically
    before promoting it heavily.
 
-## What's intentionally left as a next step
+## New: Feed (posts + likes)
+
+The app is now a tab-based shell: **Feed**, **Post**, and **5-Min Chat**. The
+chat tab is your original app, completely unchanged in behavior. Feed and
+Post are new.
+
+**Identity:** posts use the same lightweight, account-free identity as the
+Friends feature — a random ID stored in the browser, plus whatever display
+name the user picked. There's no login, so there's no way to cryptographically
+prove a post "belongs" to someone — that's an accepted trade-off for
+launch speed. If impersonation becomes a real problem, the natural next
+step is swapping this for real auth (Supabase Auth supports this
+directly, since you're already using Supabase for the database).
+
+**Why two new external services?** Render's free-tier disk is wiped on
+every restart or redeploy — so posts and images can't just be saved to a
+local file the way the in-memory chat state works. Both services below
+have free tiers with no credit card required for this scale:
+
+### 1. Set up Supabase (stores your posts)
+
+1. Go to [supabase.com](https://supabase.com) → create a free account → New Project.
+2. Once it's created, go to the **SQL Editor** and run:
+   ```sql
+   create table posts (
+     id uuid primary key default gen_random_uuid(),
+     persistent_id text not null,
+     username text not null,
+     image_url text not null,
+     caption text,
+     likes text[] default '{}',
+     created_at timestamptz default now()
+   );
+   ```
+3. Go to **Project Settings → API**. Copy the **Project URL** and the
+   **service_role** key (not the "anon" key — the service role key is
+   meant to be used server-side only, which is exactly what this backend does).
+4. On Render, add two environment variables to your backend service:
+   - `SUPABASE_URL` = your Project URL
+   - `SUPABASE_SERVICE_KEY` = your service_role key
+5. Redeploy the backend. Visit `https://your-backend.onrender.com/api/posts`
+   — you should see `{"posts":[]}` instead of the "not configured" error.
+
+### 2. Set up Cloudinary (stores uploaded images)
+
+1. Go to [cloudinary.com](https://cloudinary.com) → create a free account.
+2. On your dashboard, copy your **Cloud Name**.
+3. Go to **Settings → Upload → Upload presets → Add upload preset**.
+   - Set **Signing Mode** to **Unsigned** (this lets the browser upload
+     images directly to Cloudinary without needing a secret key on the
+     frontend — safe for this use case since it only allows uploads, not
+     account access).
+   - Save, and copy the preset name.
+4. On Vercel, add two environment variables:
+   - `VITE_CLOUDINARY_CLOUD_NAME` = your cloud name
+   - `VITE_CLOUDINARY_UPLOAD_PRESET` = your preset name
+5. Redeploy the frontend (remember: Vite bakes env vars in at build time).
+
+Once both are set up, the Feed and Post tabs work end to end: pick a photo,
+add a caption, hit Share — it uploads to Cloudinary, saves a record in
+Supabase, and shows up in the feed with a working like button.
+
+**Moderation:** captions are checked through the same `moderateMessage`
+function used in chat, so the profanity/personal-info filtering applies
+there too. Image content itself is not moderated (no image classifier is
+wired up) — if you plan to accept public image uploads at real scale, that
+is a meaningful gap worth closing before wide launch, since unmoderated
+public image uploads are one of the highest-risk features in a social app.
+
 
 Per your own plan's "Non-Negotiable Rules," a static word list can't safely
 catch hate speech, threats, or harassment — that needs a real classifier.
